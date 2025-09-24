@@ -5,34 +5,24 @@ import requests
 import re
 import string
 import os
-from scipy.sparse import load_npz
-import numpy as np
 
-api_key = os.environ.get('API_KEY')
+import streamlit as st
+
+api_key = st.secrets["API_KEY"]
 
 st.title("Movie Recommendation and Review Analysis System") 
 
-# Load optimized files instead of original large files
-try:
-    # Load the minimal movies data
-    movies_data = joblib.load('optimized_model_movies.joblib')
-    
-    # Load the sparse similarity matrix
-    similarity_sparse = load_npz('optimized_model_similarity.npz')
-    
-    # Convert movies data back to DataFrame for compatibility
-    movies_title = pd.DataFrame(movies_data)
-    
-except FileNotFoundError:
-    st.error("Optimized model files not found. Please generate them first.")
-    st.stop()
-
+movies_title = joblib.load('Model/movies_data.joblib')
+similarity = joblib.load('Model/similarity.joblib')
 sentiment_model = joblib.load('Model/sentiment_analysis_model.pkl')
 vectorizer  = joblib.load('Model/tfidf_vectorizer.pkl')
+
+movies_title = pd.DataFrame(movies_title)
 
 def search_movie_title(movie_data):
     select = st.selectbox("Search", movie_data["title"].values)
     return select
+
 
 select = search_movie_title(movies_title)
 
@@ -57,10 +47,13 @@ def preprocess_text(text):
 
     return text
 
+
+
+
 # Function to perform sentiment analysis
 def analyze_sentiment(review):
     # Preprocess the review text and transform it using the vectorizer
-    processed_review = preprocess_text(review)
+    processed_review = preprocess_text(review)  # You need to define the preprocess_text function
     vectorized_review = vectorizer.transform([processed_review])
     
     # Predict sentiment using the loaded model
@@ -74,14 +67,20 @@ def analyze_sentiment(review):
 
     return sentiment_label
 
+
+
 def poster(movie_id):
-    get_img = requests.get(f"https://api.themoviedb.org/3/movie/{movie_id}?api_key={api_key}&language=en-Us")
-    data = get_img.json()
-    
-    if 'poster_path' in data:
-        return "https://image.tmdb.org/t/p/original/" + data['poster_path']
-    else:
+    url = f"https://api.themoviedb.org/3/movie/{movie_id}?api_key={api_key}&language=en-US"
+    try:
+        get_img = requests.get(url, timeout=10)
+        get_img.raise_for_status()
+        data = get_img.json()
+        return "https://image.tmdb.org/t/p/original/" + data.get('poster_path', '')
+    except requests.exceptions.RequestException as e:
+        st.error(f"Error fetching poster: {e}")
         return "No poster available"
+
+    
     
 def get_movie_reviews(movie_id):
     reviews_url = requests.get(f"https://api.themoviedb.org/3/movie/{movie_id}/reviews?api_key={api_key}") 
@@ -94,52 +93,42 @@ def get_movie_reviews(movie_id):
         reviews.append({"author": author, "content": content})
     
     return reviews
-
-# UPDATED RECOMMEND FUNCTION for optimized files
+    
+    
 def recommend(movie):
-    if movie not in movies_data['titles']:
-        return [], []
-    
-    movie_index = movies_data['titles'].index(movie)
-    
-    # Convert sparse row to dense for that specific movie
-    distances = similarity_sparse[movie_index].toarray().flatten()
-    
-    # Get top 10 recommendations (excluding the movie itself)
-    top_indices = np.argsort(distances)[-11:-1][::-1]  # Get top 10 excluding self
-    
+    movie_index = movies_title[movies_title['title'] == movie].index[0]
+    distances = similarity[movie_index]
+    movies_list = sorted(list(enumerate(distances)), reverse=True, key=lambda x:x[1])[1:11]  
     recommended_movies = []
     recommended_movies_posters = []
-    
-    for idx in top_indices:
-        movie_id = movies_data['ids'][idx]
-        recommended_movies.append(movies_data['titles'][idx])
+          
+    for i in movies_list:
+        movie_id = movies_title.iloc[i[0]].id
+        recommended_movies.append(movies_title.iloc[i[0]].title)
         recommended_movies_posters.append(poster(movie_id))
-    
     return recommended_movies, recommended_movies_posters
+
 
 if select:
     names, posters = recommend(select)
     
-    # Get movie details from the optimized data
-    if select in movies_data['titles']:
-        movie_index = movies_data['titles'].index(select)
-        id = movies_data['ids'][movie_index]
-        overview = movies_data['overview'][movie_index] if 'overview' in movies_data else "No overview available"
-        genre = movies_data['genres'][movie_index]
-        casts = movies_data['cast'][movie_index] if 'cast' in movies_data else "Cast information not available"
-        crew = movies_data['crew'][movie_index] if 'crew' in movies_data else "Director information not available"
-        release_date = movies_data['release_date'][movie_index] if 'release_date' in movies_data else "Release date not available"
-        rating = movies_data['vote_average'][movie_index]
-    else:
-        st.error("Movie details not found")
-        st.stop()
+    # Assuming `movies_title` is a DataFrame containing movie information
+    id = movies_title.loc[movies_title['title'] == select, 'id'].values[0]
+    overview = movies_title.loc[movies_title['id'] == id, 'overview'].values[0]
+    genre = movies_title.loc[movies_title['id'] == id, 'genres'].values[0]
+    casts = movies_title.loc[movies_title['id'] == id, 'cast'].values[0]
+    crew = movies_title.loc[movies_title['id'] == id, 'crew'].values[0]
+    release_date =  movies_title.loc[movies_title['id'] == id, 'release_date'].values[0]
+    rating = movies_title.loc[movies_title['id'] == id, 'vote_average'].values[0]
+
+
     
     # Create two columns layout
     col1, col2 = st.columns([1, 2])
     
     with col1:
-        st.image(poster(id), use_column_width=True, width='100%')
+        st.image(poster(id), use_column_width=True, width='100%')  # Full width of the screen
+         
     
     with col2:
         st.write(f'### {select}')
@@ -150,6 +139,7 @@ if select:
         st.write(f"**Rating:** `{rating}`")
         
     st.warning(overview)
+
 
     # Fetch and display movie reviews
     st.write("#### Reviews:")
@@ -176,6 +166,7 @@ if select:
 
             st.write("-" * 40)
 
+
         # Flag to track if all reviews have been shown
         all_reviews_shown = False
 
@@ -193,14 +184,21 @@ if select:
                             st.write(f"##### `Review:` {sentiment.capitalize()} {emoji_html}", unsafe_allow_html=True)
                         else:
                             emoji_html = '<span style="font-size: 25px;">👎</span>'
-                            st.write(f"##### `Review:` {sentiment.capitalize()} {emoji_html}", unsafe_allow_htm=True)
+                            st.write(f"##### `Review:` {sentiment.capitalize()} {emoji_html}", unsafe_allow_html=True)
                         st.write("-" * 40)
-                    
+                        
                     all_reviews_shown = True
+                
         
+
         # Hide the button if all reviews have been shown
         if all_reviews_shown:
             st.button("Show Less Reviews", key="hide_button")
+                    
+
+
+
+    
 
     st.write("#### Recommendations:")
     
@@ -209,17 +207,6 @@ if select:
     
     image_size = (135, 220)  # Adjusted image size
     
-    # Add JavaScript for movie selection
-    st.markdown("""
-    <script>
-    function selectMovie(movieName) {
-        // This function will be called when a movie poster is clicked
-        // You can implement navigation or selection logic here
-        console.log("Selected movie: " + movieName);
-        // For now, just log to console - you can add actual navigation logic
-    }
-    </script>
-    """, unsafe_allow_html=True)
 
     for i in range(len(names)):
         with cols[i % num_cols]:
@@ -232,6 +219,7 @@ if select:
             """
             st.markdown(button_html, unsafe_allow_html=True)
             st.markdown(" <br><br><br><br> ", unsafe_allow_html=True)
+
 
 # Footer
 st.markdown('''
@@ -253,3 +241,5 @@ GitHub: [https://github.com/MukeshMushyakhwo]
 Happy Movie Watching! 🎥🍿
 --------------------------------------------------------------
 ''')
+
+
